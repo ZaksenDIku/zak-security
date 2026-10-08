@@ -1,0 +1,278 @@
+// Zak Security - prototype data model
+// SQLite for the first version. No Docker / PostgreSQL required.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum DataMode {
+  REAL
+  DEMO
+}
+
+enum AssetType {
+  WEBSITE
+  DOMAIN
+  GITHUB_REPO
+  AI_AGENT
+  MCP_SERVER
+}
+
+enum AssetStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum AuthorizationStatus {
+  ACTIVE
+  EXPIRED
+  NOT_AUTHORIZED
+}
+
+enum CheckType {
+  PASSIVE_WEB
+  SAFE_HTTP
+  DEPENDENCY_CHECK
+  GITHUB_SECURITY
+  AI_AGENT_REVIEW
+  MCP_REVIEW
+}
+
+enum Severity {
+  INFO
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum FindingStatus {
+  OPEN
+  IN_PROGRESS
+  FIXED
+  ACCEPTED_RISK
+}
+
+enum FindingSource {
+  PASSIVE_CHECK
+  DEPENDENCY_INTEL
+  THREAT_INTEL
+  AI_AGENT_REVIEW
+  MCP_REVIEW
+  MANUAL
+}
+
+enum AssetImportance {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum LeadStatus {
+  NEW
+  RESEARCHING
+  CONTACTED
+  QUALIFIED
+  NOT_INTERESTED
+}
+
+model Asset {
+  id                 String              @id @default(cuid())
+  name               String
+  type               AssetType
+  url                String
+  owner              String
+  status             AssetStatus         @default(ACTIVE)
+  authorizationStatus AuthorizationStatus @default(NOT_AUTHORIZED)
+  lastChecked        DateTime?
+  notes              String?
+  importance         AssetImportance     @default(MEDIUM)
+  /// Comma separated technology tags, e.g. "nextjs,react,nginx"
+  technologies       String              @default("")
+  /// Detected / declared version string, e.g. "14.2.3"
+  version            String?
+  dataMode           DataMode            @default(REAL)
+
+  // AI agent configuration review
+  aiTools                 String  @default("")
+  aiPermissions           String  @default("")
+  aiExternalIntegrations  String  @default("")
+  aiHumanApprovalRequired Boolean @default(true)
+  aiSensitiveDataAccess   Boolean @default(false)
+
+  // MCP server configuration review
+  mcpServerUrl             String? @map("mcp_server_url")
+  mcpAuthenticationEnabled Boolean @default(false)
+  mcpToolsExposed          String  @default("")
+  mcpWriteAccess           Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  authorizations Authorization[]
+  findings       Finding[]
+  checks         CheckRun[]
+
+  @@index([status])
+  @@index([authorizationStatus])
+}
+
+model Authorization {
+  id            String              @id @default(cuid())
+  assetId       String
+  asset         Asset               @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  authorizedBy  String
+  scope         String
+  startDate     DateTime
+  endDate       DateTime
+  /// Comma separated CheckType values
+  allowedChecks String              @default("")
+  notes         String?
+  status        AuthorizationStatus @default(ACTIVE)
+  dataMode      DataMode            @default(REAL)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@index([status])
+  @@index([endDate])
+}
+
+model Finding {
+  id          String        @id @default(cuid())
+  title       String
+  assetId     String
+  asset       Asset         @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  category    String
+  severity    Severity      @default(INFO)
+  status      FindingStatus @default(OPEN)
+  description String
+  /// Human readable proof. Never emit a finding without this.
+  evidence    String
+  /// Where the evidence came from (URL, file, advisory id)
+  source      String
+  /// Machine readable evidence detail (headers, snippets, rule ids)
+  evidenceData String       @default("")
+  detectedAt  DateTime      @default(now())
+  remediation String?
+  verifiedAt  DateTime?
+  /// Set when a re-test confirmed the issue is gone
+  reverifiedAt DateTime?
+  sourceType  FindingSource @default(PASSIVE_CHECK)
+  /// Dedupe key so re-running a check updates instead of duplicating
+  fingerprint String       @default("")
+  dataMode    DataMode      @default(REAL)
+  updatedAt   DateTime      @updatedAt
+
+  checks CheckRun[]
+
+  @@index([status])
+  @@index([severity])
+  @@index([detectedAt])
+  @@index([fingerprint])
+}
+
+model CheckRun {
+  id            String   @id @default(cuid())
+  assetId       String
+  asset         Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  checkType     CheckType
+  /// true = allowed because an Authorization covers it
+  authorized    Boolean  @default(false)
+  mode          String   @default("PASSIVE")
+  result        String   @default("COMPLETED")
+  summary       String   @default("")
+  /// Full JSON payload of what was actually observed
+  resultData    String   @default("")
+  findingsCount Int      @default(0)
+  dataMode      DataMode @default(REAL)
+  startedAt     DateTime @default(now())
+  finishedAt    DateTime?
+
+  findings Finding[]
+
+  @@index([assetId])
+  @@index([startedAt])
+}
+
+model ThreatAdvisory {
+  id                 String   @id @default(cuid())
+  advisoryId         String   @unique
+  cve                String?
+  title              String
+  /// e.g. "Next.js", "nginx", "OpenSSH"
+  affectedTechnology String
+  affectedVersions   String   @default("")
+  fixedVersion       String?
+  severity           Severity @default(MEDIUM)
+  knownExploited     Boolean  @default(false)
+  patchAvailable     Boolean  @default(false)
+  publishedAt        DateTime
+  description        String   @default("")
+  referenceUrl       String   @default("")
+  /// CISA_KEV | GHSA | OTHER
+  feed               String   @default("OTHER")
+  dataMode           DataMode @default(DEMO)
+  createdAt          DateTime @default(now())
+
+  @@index([severity])
+  @@index([knownExploited])
+}
+
+model SecurityLead {
+  id                 String     @id @default(cuid())
+  company            String
+  website            String
+  industry           String
+  location           String
+  /// Phrase as an opportunity, never as "this company is vulnerable".
+  observedIssue      String
+  serviceOpportunity String
+  status             LeadStatus @default(NEW)
+  sourceUrl          String
+  notes              String?
+  dataMode           DataMode    @default(DEMO)
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  @@index([status])
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  action    String
+  entity    String
+  entityId  String?
+  assetId   String?
+  summary   String
+  details   String   @default("")
+  dataMode  DataMode @default(REAL)
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([assetId])
+}
+
+model Remediation {
+  id          String   @id @default(cuid())
+  title       String
+  category    String
+  whyItMatters String
+  fix         String
+  /// JSON array of { stack, snippet }
+  examples    String   @default("[]")
+  verification String
+  /// RENDERED | AI_ASSISTED
+  generatedBy String   @default("TEMPLATES")
+  dataMode    DataMode @default(REAL)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([category])
+}
